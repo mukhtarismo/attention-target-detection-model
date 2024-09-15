@@ -12,7 +12,7 @@ from lib.pytorch_convolutional_rnn import convolutional_rnn
 import argparse
 import os
 import numpy as np
-from scipy.misc import imresize
+# from scipy.misc import imresize
 import warnings
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -20,8 +20,8 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0, help="gpu id")
-parser.add_argument("--model_weights", type=str, default='model_videoatttarget.pt', help="model weights")
-parser.add_argument("--batch_size", type=int, default=16, help="batch size")
+parser.add_argument("--model_weights", type=str, default='pretrained-models/model_videoatttarget.pt', help="model weights")
+parser.add_argument("--batch_size", type=int, default=8, help="batch size")
 args = parser.parse_args()
 
 
@@ -46,6 +46,7 @@ def test():
                                              num_workers=0,
                                              collate_fn=video_pack_sequences)
 
+    
     # Define device
     device = torch.device('cuda', args.device)
 
@@ -69,12 +70,13 @@ def test():
     with torch.no_grad():
         for batch_val, (img_val, face_val, head_channel_val, gaze_heatmap_val, cont_gaze, inout_label_val, lengths_val) in enumerate(val_loader):
             print('\tprogress = ', batch_val+1, '/', len(val_loader))
-            X_pad_data_img, X_pad_sizes = pack_padded_sequence(img_val, lengths_val, batch_first=True)
-            X_pad_data_head, _ = pack_padded_sequence(head_channel_val, lengths_val, batch_first=True)
-            X_pad_data_face, _ = pack_padded_sequence(face_val, lengths_val, batch_first=True)
-            Y_pad_data_cont_gaze, _ = pack_padded_sequence(cont_gaze, lengths_val, batch_first=True)
-            Y_pad_data_heatmap, _ = pack_padded_sequence(gaze_heatmap_val, lengths_val, batch_first=True)
-            Y_pad_data_inout, _ = pack_padded_sequence(inout_label_val, lengths_val, batch_first=True)
+            X_pad_data_img = pack_padded_sequence(img_val, lengths_val, batch_first=True)
+            print(img_val.shape)
+            X_pad_data_head = pack_padded_sequence(head_channel_val, lengths_val, batch_first=True)
+            X_pad_data_face = pack_padded_sequence(face_val, lengths_val, batch_first=True)
+            Y_pad_data_cont_gaze = pack_padded_sequence(cont_gaze, lengths_val, batch_first=True)
+            Y_pad_data_heatmap = pack_padded_sequence(gaze_heatmap_val, lengths_val, batch_first=True)
+            Y_pad_data_inout = pack_padded_sequence(inout_label_val, lengths_val, batch_first=True)
 
             hx = (torch.zeros((num_lstm_layers, args.batch_size, 512, 7, 7)).cuda(device),
                   torch.zeros((num_lstm_layers, args.batch_size, 512, 7, 7)).cuda(device)) # (num_layers, batch_size, feature dims)
@@ -82,15 +84,15 @@ def test():
             previous_hx_size = args.batch_size
 
             for i in range(0, lengths_val[0], chunk_size):
-                X_pad_sizes_slice = X_pad_sizes[i:i + chunk_size].cuda(device)
+                X_pad_sizes_slice = X_pad_data_img.batch_sizes[i:i + chunk_size]#.cuda(device)
                 curr_length = np.sum(X_pad_sizes_slice.cpu().detach().numpy())
                 # slice padded data
-                X_pad_data_slice_img = X_pad_data_img[last_index:last_index + curr_length].cuda(device)
-                X_pad_data_slice_head = X_pad_data_head[last_index:last_index + curr_length].cuda(device)
-                X_pad_data_slice_face = X_pad_data_face[last_index:last_index + curr_length].cuda(device)
-                Y_pad_data_slice_cont_gaze = Y_pad_data_cont_gaze[last_index:last_index + curr_length].cuda(device)
-                Y_pad_data_slice_heatmap = Y_pad_data_heatmap[last_index:last_index + curr_length].cuda(device)
-                Y_pad_data_slice_inout = Y_pad_data_inout[last_index:last_index + curr_length].cuda(device)
+                X_pad_data_slice_img = X_pad_data_img.data[last_index:last_index + curr_length].cuda(device)
+                X_pad_data_slice_head = X_pad_data_head.data[last_index:last_index + curr_length].cuda(device)
+                X_pad_data_slice_face = X_pad_data_face.data[last_index:last_index + curr_length].cuda(device)
+                Y_pad_data_slice_cont_gaze = Y_pad_data_cont_gaze.data[last_index:last_index + curr_length].cuda(device)
+                Y_pad_data_slice_heatmap = Y_pad_data_heatmap.data[last_index:last_index + curr_length].cuda(device)
+                Y_pad_data_slice_inout = Y_pad_data_inout.data[last_index:last_index + curr_length].cuda(device)
                 last_index += curr_length
 
                 # detach previous hidden states to stop gradient flow
@@ -100,50 +102,51 @@ def test():
                 # forward pass
                 deconv, inout_val, hx = model(X_pad_data_slice_img, X_pad_data_slice_head, X_pad_data_slice_face, \
                                                          hidden_scene=prev_hx, batch_sizes=X_pad_sizes_slice)
+                # print(X_pad_data_slice_img.shape, deconv.shape)
+                
+    #             for b_i in range(len(Y_pad_data_slice_cont_gaze)):
+    #                 if Y_pad_data_slice_inout[b_i]: # ONLY for 'inside' cases
+    #                     # AUC: area under curve of ROC
+    #                     multi_hot = torch.zeros(output_resolution, output_resolution)  # set the size of the output
+    #                     gaze_x = Y_pad_data_slice_cont_gaze[b_i, 0]
+    #                     gaze_y = Y_pad_data_slice_cont_gaze[b_i, 1]
+    #                     multi_hot = imutils.draw_labelmap(multi_hot, [gaze_x * output_resolution, gaze_y * output_resolution], 3, type='Gaussian')
+    #                     multi_hot = (multi_hot > 0).float() * 1 # make GT heatmap as binary labels
+    #                     multi_hot = misc.to_numpy(multi_hot)
 
-                for b_i in range(len(Y_pad_data_slice_cont_gaze)):
-                    if Y_pad_data_slice_inout[b_i]: # ONLY for 'inside' cases
-                        # AUC: area under curve of ROC
-                        multi_hot = torch.zeros(output_resolution, output_resolution)  # set the size of the output
-                        gaze_x = Y_pad_data_slice_cont_gaze[b_i, 0]
-                        gaze_y = Y_pad_data_slice_cont_gaze[b_i, 1]
-                        multi_hot = imutils.draw_labelmap(multi_hot, [gaze_x * output_resolution, gaze_y * output_resolution], 3, type='Gaussian')
-                        multi_hot = (multi_hot > 0).float() * 1 # make GT heatmap as binary labels
-                        multi_hot = misc.to_numpy(multi_hot)
+    #                     scaled_heatmap = imresize(deconv[b_i].squeeze(), (output_resolution, output_resolution), interp = 'bilinear')
+    #                     auc_score = evaluation.auc(scaled_heatmap, multi_hot)
+    #                     AUC.append(auc_score)
 
-                        scaled_heatmap = imresize(deconv[b_i].squeeze(), (output_resolution, output_resolution), interp = 'bilinear')
-                        auc_score = evaluation.auc(scaled_heatmap, multi_hot)
-                        AUC.append(auc_score)
+    #                     # distance: L2 distance between ground truth and argmax point
+    #                     pred_x, pred_y = evaluation.argmax_pts(deconv[b_i].squeeze())
+    #                     norm_p = [pred_x/output_resolution, pred_y/output_resolution]
+    #                     dist_score = evaluation.L2_dist(Y_pad_data_slice_cont_gaze[b_i], norm_p).item()
+    #                     distance.append(dist_score)
 
-                        # distance: L2 distance between ground truth and argmax point
-                        pred_x, pred_y = evaluation.argmax_pts(deconv[b_i].squeeze())
-                        norm_p = [pred_x/output_resolution, pred_y/output_resolution]
-                        dist_score = evaluation.L2_dist(Y_pad_data_slice_cont_gaze[b_i], norm_p).item()
-                        distance.append(dist_score)
+    #             # in vs out classification
+    #             in_vs_out_groundtruth.extend(Y_pad_data_slice_inout.cpu().numpy())
+    #             in_vs_out_pred.extend(inout_val.cpu().numpy())
 
-                # in vs out classification
-                in_vs_out_groundtruth.extend(Y_pad_data_slice_inout.cpu().numpy())
-                in_vs_out_pred.extend(inout_val.cpu().numpy())
+    #             previous_hx_size = X_pad_sizes_slice[-1]
 
-                previous_hx_size = X_pad_sizes_slice[-1]
+    #         try:
+    #             print("\tAUC:{:.4f}"
+    #                   "\tdist:{:.4f}"
+    #                   "\tin vs out AP:{:.4f}".
+    #                   format(torch.mean(torch.tensor(AUC)),
+    #                          torch.mean(torch.tensor(distance)),
+    #                          evaluation.ap(in_vs_out_groundtruth, in_vs_out_pred)))
+    #         except:
+    #             pass
 
-            try:
-                print("\tAUC:{:.4f}"
-                      "\tdist:{:.4f}"
-                      "\tin vs out AP:{:.4f}".
-                      format(torch.mean(torch.tensor(AUC)),
-                             torch.mean(torch.tensor(distance)),
-                             evaluation.ap(in_vs_out_groundtruth, in_vs_out_pred)))
-            except:
-                pass
-
-    print("Summary ")
-    print("\tAUC:{:.4f}"
-          "\tdist:{:.4f}"
-          "\tin vs out AP:{:.4f}".
-          format(torch.mean(torch.tensor(AUC)),
-                 torch.mean(torch.tensor(distance)),
-                 evaluation.ap(in_vs_out_groundtruth, in_vs_out_pred)))
+    # print("Summary ")
+    # print("\tAUC:{:.4f}"
+    #       "\tdist:{:.4f}"
+    #       "\tin vs out AP:{:.4f}".
+    #       format(torch.mean(torch.tensor(AUC)),
+    #              torch.mean(torch.tensor(distance)),
+    #              evaluation.ap(in_vs_out_groundtruth, in_vs_out_pred)))
 
 
 def video_pack_sequences(in_batch):

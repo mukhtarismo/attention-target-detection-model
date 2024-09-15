@@ -12,8 +12,8 @@ import matplotlib as mpl
 mpl.use('Agg')
 from matplotlib import cm
 import matplotlib.pyplot as plt
-from scipy.misc import imresize
-
+# from scipy.misc import imresize
+import cv2
 import os
 import glob
 import csv
@@ -21,7 +21,7 @@ import csv
 from utils import imutils
 from utils import myutils
 from config import *
-
+from pathlib import Path
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -48,7 +48,7 @@ class GazeFollow(Dataset):
                                'gaze_y', 'inout']]
             self.X_train = df['path']
             self.length = len(df)
-
+        
         self.data_dir = data_dir
         self.transform = transform
         self.test = test
@@ -56,7 +56,7 @@ class GazeFollow(Dataset):
         self.input_size = input_size
         self.output_size = output_size
         self.imshow = imshow
-
+  
     def __getitem__(self, index):
         if self.test:
             g = self.X_test.get_group(self.keys[index])
@@ -71,7 +71,7 @@ class GazeFollow(Dataset):
                 eye_y = row['eye_y']
                 gaze_x = row['gaze_x']
                 gaze_y = row['gaze_y']
-                cont_gaze.append([gaze_x, gaze_y])  # all ground truth gaze are stacked up
+                cont_gaze.append([gaze_x, gaze_y])  # all ground truth gaze are stacked up    
             for j in range(len(cont_gaze), 20):
                 cont_gaze.append([-1, -1])  # pad dummy gaze to match size for batch processing
             cont_gaze = torch.FloatTensor(cont_gaze)
@@ -87,7 +87,6 @@ class GazeFollow(Dataset):
         y_min -= k * abs(y_max - y_min)
         x_max += k * abs(x_max - x_min)
         y_max += k * abs(y_max - y_min)
-
         img = Image.open(os.path.join(self.data_dir, path))
         img = img.convert('RGB')
         width, height = img.size
@@ -236,7 +235,7 @@ class VideoAttTarget_video(Dataset):
         show_name = sequence_path.split('/')[-3]
         clip = sequence_path.split('/')[-2]
         seq_len = len(df.index)
-
+        print('number of images -- ',df.shape[0])
         # moving-avg smoothing
         window_size = 11 # should be odd number
         df['xmin'] = myutils.smooth_by_conv(window_size, df, 'xmin')
@@ -444,6 +443,136 @@ class VideoAttTarget_video(Dataset):
             return images, faces, head_channels, heatmaps, gazes, gaze_inouts
         else: # train
             return images, faces, head_channels, heatmaps, gaze_inouts
+
+    def __len__(self):
+        return self.length
+
+
+    def __init__(self, path, img_size=640, stride=32):
+        p = str(Path(path).absolute())  # os-agnostic absolute path
+        img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp']  # acceptable image suffixes
+        vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
+        if '*' in p:
+            files = sorted(glob.glob(p, recursive=True),key= lambda x :int(x.split('/')[-1].split('.')[0]))  # glob
+        elif os.path.isdir(p):
+            files = sorted(glob.glob(os.path.join(p, '*.*')))  # dir
+        elif os.path.isfile(p):
+            files = [p]  # files
+        else:
+            raise Exception(f'ERROR: {p} does not exist')
+
+        images = [x for x in files if x.split('.')[-1].lower() in img_formats]
+        ni = len(images)
+
+        self.img_size = img_size
+        self.stride = stride
+        self.files = images
+        self.nf = ni  # number of files
+        self.mode = 'image'
+        self.cap = None
+        assert self.nf > 0, f'No images or videos found in {p}. ' \
+                            f'Supported formats are:\nimages: {img_formats}\nvideos: {vid_formats}'
+
+    def __getitem__(self, index):
+        path = self.files[index]
+        # Read image
+        img0 = cv2.imread(path)  # BGR
+        assert img0 is not None, 'Image Not Found ' + path
+        # print(f'image {index}/{self.nf} {path}: ', end='')
+
+        # Padded resize
+        img = self.letterbox2(img0, self.img_size)[0] #, stride=self.stride
+
+        # Convert
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img = np.ascontiguousarray(img)
+        return path, img, img0
+        
+
+    def __len__(self):
+        return self.nf  # number of files
+    
+    def letterbox2(self,img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
+        # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
+        shape = img.shape[:2]  # current shape [height, width]
+        if isinstance(new_shape, int):
+            new_shape = (new_shape, new_shape)
+
+        # Scale ratio (new / old)
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+        if not scaleup:  # only scale down, do not scale up (for better test mAP)
+            r = min(r, 1.0)
+
+        # Compute padding
+        ratio = r, r  # width, height ratios
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+        if auto:  # minimum rectangle
+            dw, dh = np.mod(dw, 128), np.mod(dh, 128)  # wh padding
+        elif scaleFill:  # stretch
+            dw, dh = 0.0, 0.0
+            new_unpad = (new_shape[1], new_shape[0])
+            ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+        dw /= 2  # divide padding into 2 sides
+        dh /= 2
+
+        if shape[::-1] != new_unpad:  # resize
+            img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+        return img, ratio, (dw, dh)
+
+class AttentionFlow(Dataset):
+    def __init__(self, frames, head_bboxes, transform, input_size=input_resolution, output_size=output_resolution):        
+        self.head_bboxes = head_bboxes
+        self.length = len(head_bboxes)
+    
+        
+        self.frames = frames
+        self.transform = transform
+
+        self.input_size = input_size
+        self.output_size = output_size
+  
+    def __getitem__(self, index):
+        face = self.head_bboxes[index]
+        img = Image.fromarray(np.uint8(self.frames[int(face[0])].detach().clone().numpy()))
+        frame_name = face[0]
+        person_id = face[1]
+        x_min = face[2]
+        y_min = face[3]
+        x_max = face[4]
+        y_max = face[5]
+        headbox = torch.IntTensor([x_min,y_min,x_max,y_max])
+        # expand face bbox a bit
+        k = 0.1
+        x_min -= k * abs(x_max - x_min)
+        y_min -= k * abs(y_max - y_min)
+        x_max += k * abs(x_max - x_min)
+        y_max += k * abs(y_max - y_min)
+        width, height = img.size
+        img = img.convert('RGB')
+       
+        x_min, y_min, x_max, y_max = map(float, [x_min, y_min, x_max, y_max])
+
+        
+        imsize = torch.IntTensor([width, height])
+        
+
+        head_channel = imutils.get_head_box_channel(x_min, y_min, x_max, y_max, width, height,
+                                                    resolution=self.input_size, coordconv=False).unsqueeze(0)
+
+        # Crop the face
+        face  = img.crop((int(x_min), int(y_min), int(x_max), int(y_max))) 
+
+        if self.transform is not None:
+            img = self.transform(img)
+            face = self.transform(face)
+
+        return img, face, head_channel,headbox, imsize, frame_name, person_id
+        
 
     def __len__(self):
         return self.length

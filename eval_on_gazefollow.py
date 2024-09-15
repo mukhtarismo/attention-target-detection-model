@@ -10,7 +10,7 @@ from utils import imutils, evaluation
 import argparse
 import os
 import numpy as np
-from scipy.misc import imresize
+# from scipy.misc import imresize
 import warnings
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -18,7 +18,7 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0, help="gpu id")
-parser.add_argument("--model_weights", type=str, default="model_gazefollow.pt", help="model weights")
+parser.add_argument("--model_weights", type=str, default="pretrained-models/model_gazefollow.pt", help="model weights")
 parser.add_argument("--batch_size", type=int, default=48, help="batch size")
 args = parser.parse_args()
 
@@ -42,7 +42,6 @@ def test():
                                                batch_size=args.batch_size,
                                                shuffle=True,
                                                num_workers=0)
-
     # Define device
     device = torch.device('cuda', args.device)
 
@@ -61,13 +60,23 @@ def test():
     AUC = []; min_dist = []; avg_dist = []
     with torch.no_grad():
         for val_batch, (val_img, val_face, val_head_channel, val_gaze_heatmap, cont_gaze, imsize, _) in enumerate(val_loader):
+            print('val_batch ',)
+            print('img',val_img.shape)
+            print('face',val_face.shape)
+            print('head-C',val_head_channel.shape)
+            print('gaze',val_gaze_heatmap.shape)
+            
             val_images = val_img.cuda().to(device)
             val_head = val_head_channel.cuda().to(device)
             val_faces = val_face.cuda().to(device)
             val_gaze_heatmap = val_gaze_heatmap.cuda().to(device)
             val_gaze_heatmap_pred, val_attmap, val_inout_pred = model(val_images, val_head, val_faces)
+            print('val_gaze_heatmap_pred',val_gaze_heatmap_pred.shape)
+            print('val_attmap',val_attmap.shape)
+            print('val_inout_pred',val_inout_pred.shape)
             val_gaze_heatmap_pred = val_gaze_heatmap_pred.squeeze(1)
 
+            continue
             # go through each data point and record AUC, min dist, avg dist
             for b_i in range(len(cont_gaze)):
                 # remove padding and recover valid ground truth points
@@ -89,7 +98,7 @@ def test():
                 mean_gt_gaze = torch.mean(valid_gaze, 0)
                 avg_distance = evaluation.L2_dist(mean_gt_gaze, norm_p)
                 avg_dist.append(avg_distance)
-
+    exit()
     print("\tAUC:{:.4f}\tmin dist:{:.4f}\tavg dist:{:.4f}".format(
           torch.mean(torch.tensor(AUC)),
           torch.mean(torch.tensor(min_dist)),
